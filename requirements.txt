@@ -1,0 +1,25 @@
+# toulouse-transit-explorer — Python dependencies
+# Install: pip install -r requirements.txt
+# Install: pip install -r requirements.txt
+
+# Core data
+pandas>=2.0
+pyarrow>=14.0          # Parquet read/write
+geopandas>=0.14        # GeoParquet + spatial operations
+shapely>=2.0           # Geometry primitives
+duckdb>=0.9            # In-process analytical SQL on Parquet
+numpy>=1.24
+
+# Geocoding & HTTP
+requests>=2.31
+
+# Visualisation
+folium>=0.15           # Interactive Leaflet maps
+branca>=0.7            # Folium colormaps
+plotly>=5.15           # Animated choropleth (Service Pulse)
+
+# Web app
+streamlit>=1.35        # Dashboard framework
+
+# GTFS ingestion (optional — only needed for re-ingesting raw GTFS)
+# partridge>=1.1
