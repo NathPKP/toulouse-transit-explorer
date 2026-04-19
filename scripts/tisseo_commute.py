@@ -155,29 +155,31 @@ def _open_con(day_type: str = "weekday") -> duckdb.DuckDBPyConnection:
     """
     Open a DuckDB connection with a `st` view filtered by day type.
     day_type: "weekday" | "saturday" | "sunday"
+    Uses pandas for date parsing to avoid DuckDB version edge-cases.
     """
     con = duckdb.connect()
 
-    # Map day_type to DuckDB dayofweek values (0=Sun, 1=Mon, …, 6=Sat)
-    _dow = {
-        "weekday" : "(1, 2, 3, 4, 5)",
-        "saturday": "(6,)",
-        "sunday"  : "(0,)",
-    }.get(day_type, "(1, 2, 3, 4, 5)")
-
     if CALENDAR_DATES_FILE.exists() and TRIPS_FILE.exists():
+        # pandas dayofweek: 0=Mon … 4=Fri, 5=Sat, 6=Sun
+        _dow_map = {"weekday": [0, 1, 2, 3, 4], "saturday": [5], "sunday": [6]}
+        valid_dow = _dow_map.get(day_type, [0, 1, 2, 3, 4])
+
+        cal = pd.read_parquet(CALENDAR_DATES_FILE)
+        cal["_dt"] = pd.to_datetime(cal["date"].astype(str), format="%Y%m%d")
+        valid_svc = set(
+            cal[(cal["exception_type"] == 1) & cal["_dt"].dt.dayofweek.isin(valid_dow)]
+            ["service_id"]
+        )
+
+        trips_df = pd.read_parquet(TRIPS_FILE, columns=["trip_id", "service_id"])
+        valid_trips = trips_df[trips_df["service_id"].isin(valid_svc)][["trip_id"]]
+
+        con.register("_valid_trips", valid_trips)
         con.execute(f"""
             CREATE VIEW st AS
             SELECT s.*
             FROM read_parquet('{STOP_TIMES_FILE}') s
-            JOIN (
-                SELECT DISTINCT t.trip_id
-                FROM read_parquet('{TRIPS_FILE}') t
-                JOIN read_parquet('{CALENDAR_DATES_FILE}') cd
-                  ON t.service_id = cd.service_id
-                WHERE cd.exception_type = 1
-                  AND dayofweek(strptime(CAST(cd.date AS VARCHAR), '%Y%m%d')) IN {_dow}
-            ) valid ON s.trip_id = valid.trip_id
+            JOIN _valid_trips vt ON s.trip_id = vt.trip_id
         """)
     else:
         con.execute(f"CREATE VIEW st AS SELECT * FROM read_parquet('{STOP_TIMES_FILE}')")
