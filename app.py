@@ -193,6 +193,12 @@ _L: dict[str, dict[str, str]] = {
         "t3_export"        : "Télécharger le classement (CSV)",
         "t5_radar"         : "Profil de desserte",
         "t5_score_lbl"     : "Score global",
+        "cmp_search_exp"   : "Trouver un quartier par adresse",
+        "cmp_find_a"       : "Adresse → Quartier A",
+        "cmp_find_b"       : "Adresse → Quartier B",
+        "cmp_locate"       : "Localiser",
+        "err_min2"         : "Saisissez au moins 2 adresses avant de lancer le calcul.",
+        "t3_click_tip"     : "Cliquez une ligne pour la surligner sur la carte",
     },
     "en": {
         "app_title"        : "Tisséo Network — Toulouse",
@@ -356,6 +362,12 @@ _L: dict[str, dict[str, str]] = {
         "t3_export"        : "Download ranking (CSV)",
         "t5_radar"         : "Coverage profile",
         "t5_score_lbl"     : "Overall score",
+        "cmp_search_exp"   : "Find a district by address",
+        "cmp_find_a"       : "Address → District A",
+        "cmp_find_b"       : "Address → District B",
+        "cmp_locate"       : "Locate",
+        "err_min2"         : "Enter at least 2 addresses before calculating.",
+        "t3_click_tip"     : "Click a row to highlight it on the map",
     },
 }
 
@@ -421,6 +433,20 @@ DEST_ICONS = ["briefcase", "home", "university", "hospital-o", "star", "map-mark
 
 HOURLY_FILE      = cfg.GEO / "hourly_indicators.parquet"
 PULSE_CACHE_PATH = cfg.GEO / "_pulse_figure.pkl"
+
+_SCROLL_ZOOM_JS = """<script>
+(function(){
+  if(!window.matchMedia('(pointer:fine)').matches)return;
+  var t=setInterval(function(){
+    var found=false;
+    for(var k in window){try{
+      if(window[k]&&window[k]._leaflet_id!=null&&window[k].scrollWheelZoom){
+        window[k].scrollWheelZoom.enable();found=true;}}catch(e){}}
+    if(found)clearInterval(t);
+  },150);
+  setTimeout(function(){clearInterval(t);},8000);
+})();
+</script>"""
 
 # ── Cached data loaders ───────────────────────────────────────────────────────
 
@@ -555,6 +581,10 @@ def build_radar_chart(r1, r2, name1, name2, gdf):
 
 
 # ── UI helpers ────────────────────────────────────────────────────────────────
+
+def _add_scroll_zoom(html: str) -> str:
+    return html.replace("</body>", _SCROLL_ZOOM_JS + "</body>")
+
 
 def mcard(value: str, label: str, color: str = "#1e293b"):
     st.markdown(
@@ -697,7 +727,7 @@ def page_desserte():
                         f"<b>{found['label']}</b><br>{found['iris_nom']}", max_width=200),
                     icon=folium.Icon(color="blue", icon="map-marker", prefix="fa"),
                 ).add_to(m)
-            st.session_state.desserte_html = m.get_root().render()
+            st.session_state.desserte_html = _add_scroll_zoom(m.get_root().render())
     components.html(st.session_state.desserte_html, height=740)
 
 
@@ -777,7 +807,7 @@ def page_commute():
                     with st.spinner("Construction de la carte…"):
                         m = build_map(result, lat, lon, label, heure)
                     st.session_state["c1_result"]   = result
-                    st.session_state["c1_map_html"] = m.get_root().render()
+                    st.session_state["c1_map_html"] = _add_scroll_zoom(m.get_root().render())
                     st.session_state["c1_dest"]     = (lat, lon, label)
                     st.session_state["c1_params"]   = (heure, marche)
                     st.query_params.update({
@@ -931,7 +961,7 @@ def _multi_popup(row, dest_infos):
       </div></div>"""
 
 
-def build_multi_map(combined, dest_infos):
+def build_multi_map(combined, dest_infos, highlight_code=None):
     valid = combined["commute_weighted"].dropna()
     vmin  = max(0.0, float(valid.min()) - 2) if not valid.empty else 0
     vmax  = float(min(COMMUTE_CAP, valid.quantile(0.95))) if not valid.empty else COMMUTE_CAP
@@ -947,9 +977,11 @@ def build_multi_map(combined, dest_infos):
         color = cmap(min(w, COMMUTE_CAP)) if not pd.isna(w) else "#cccccc"
         nom   = row.get("iris_nom", "")
         tip   = f"{nom} — {w:.0f} min" if not pd.isna(w) else f"{nom} — incomplete link"
+        is_hl = highlight_code and row.get("iris_code") == highlight_code
         folium.GeoJson(row.geometry.__geo_interface__,
-            style_function=lambda _, c=color: {"fillColor": c, "color": "#555",
-                                               "weight": 0.5, "fillOpacity": 0.78},
+            style_function=lambda _, c=color, h=is_hl: {
+                "fillColor": c, "color": "#1d4ed8" if h else "#555",
+                "weight": 3 if h else 0.5, "fillOpacity": 0.92 if h else 0.78},
             tooltip=folium.Tooltip(tip, sticky=True),
             popup=folium.Popup(_multi_popup(row, dest_infos), max_width=280),
         ).add_to(fg)
@@ -1086,8 +1118,21 @@ def page_multi():
     run_btn = st.button(t("t3_run"), type="primary", use_container_width=True, key="md_run")
 
     if run_btn:
-        dests_ok = [d for d in dests
-                    if st.session_state.md_geo.get(d["id"]) and d["address"].strip()]
+        dests_with_addr = [d for d in dests if d["address"].strip()]
+        if len(dests_with_addr) < 2:
+            st.error(t("err_min2"))
+            st.stop()
+
+        # Auto-geocode any address not yet verified (optimisation: skip if cached)
+        for d in dests_with_addr:
+            if d["id"] not in st.session_state.md_geo:
+                try:
+                    lat_g, lon_g, lbl_g = parse_dest(d["address"])
+                    st.session_state.md_geo[d["id"]] = (lat_g, lon_g, lbl_g)
+                except ValueError as e:
+                    st.error(f"{d['name']}: {e}")
+
+        dests_ok = [d for d in dests_with_addr if st.session_state.md_geo.get(d["id"])]
         if len(dests_ok) < 2:
             st.error(t("err_min2"))
             st.stop()
@@ -1172,17 +1217,20 @@ def page_multi():
 
     if st.session_state.md_map is None:
         with st.spinner("Construction de la carte…"):
-            m = build_multi_map(combined, dest_infos)
-            st.session_state.md_map = m.get_root().render()
+            m = build_multi_map(combined, dest_infos,
+                                highlight_code=st.session_state.get("md_highlight"))
+            st.session_state.md_map = _add_scroll_zoom(m.get_root().render())
     components.html(st.session_state.md_map, height=740)
 
     st.markdown("---")
     st.markdown(f"**{t('t3_top')}**")
+    st.caption(t("t3_click_tip"))
     t_cols = [f"t_{label}" for label, *_ in dest_infos]
     top = (combined.dropna(subset=["commute_weighted"])
            .nsmallest(20, "commute_weighted")
-           [["iris_nom", "commute_weighted", "commute_max", "all_connected",
-             "score_desserte", "categorie"] + t_cols].copy())
+           [["iris_code", "iris_nom", "commute_weighted", "commute_max", "all_connected",
+             "score_desserte", "categorie"] + t_cols].copy()
+           .reset_index(drop=True))
     top[t("t3_avg")]      = top["commute_weighted"].map(lambda x: f"{x:.0f} min")
     top[t("t3_worst")]    = top["commute_max"].map(lambda x: f"{x:.0f} min")
     _is_fr = st.session_state.get("lang", "fr") == "fr"
@@ -1197,7 +1245,14 @@ def page_multi():
     show = ([t("t2_col_district"), t("t3_avg"), t("t3_worst"), t("t3_all_conn")]
             + [lb for lb, *_ in dest_infos] + [t("t3_score"), t("t3_cat")])
     df_export = top.rename(columns=rename)[show]
-    st.dataframe(df_export, use_container_width=True, hide_index=True)
+    event = st.dataframe(df_export, use_container_width=True, hide_index=True,
+                         on_select="rerun", selection_mode="single-row")
+    if event.selection.rows:
+        new_code = top.iloc[event.selection.rows[0]]["iris_code"]
+        if new_code != st.session_state.get("md_highlight"):
+            st.session_state.md_highlight = new_code
+            st.session_state.md_map = None
+            st.rerun()
     st.download_button(t("t3_export"), df_export.to_csv(index=False),
                        "top20_quartiers.csv", "text/csv")
 
@@ -1369,6 +1424,44 @@ def page_compare():
 
     CAT_COL = {"bien desservi": "#1a9850", "moyen": "#f59e0b",
                "sous-desservi": "#d73027"}
+
+    with st.expander("🔍 " + t("cmp_search_exp"), expanded=False):
+        from shapely.geometry import Point as _CmpPoint
+        cs1, cs2 = st.columns(2)
+        with cs1:
+            ca1 = st.text_input(t("cmp_find_a"), key="cmp_saddr1",
+                                placeholder=t("t1_search_ph"))
+            if st.button(t("cmp_locate"), key="cmp_sloc1") and ca1.strip():
+                try:
+                    _lt, _ln, _lb = parse_dest(ca1)
+                    _pt = gpd.GeoDataFrame({"geometry": [_CmpPoint(_ln, _lt)]}, crs="EPSG:4326")
+                    _j  = gpd.sjoin(_pt, gdf[["iris_nom", "geometry"]],
+                                    how="left", predicate="within")
+                    _nm = _j.iloc[0].get("iris_nom") if not _j.empty else None
+                    if _nm and _nm in nom_to_code:
+                        st.session_state["cmp_d1"] = _nm
+                        st.rerun()
+                    else:
+                        st.warning(t("t1_search_notfound"))
+                except ValueError as e:
+                    st.error(str(e))
+        with cs2:
+            ca2 = st.text_input(t("cmp_find_b"), key="cmp_saddr2",
+                                placeholder=t("t1_search_ph"))
+            if st.button(t("cmp_locate") + " ", key="cmp_sloc2") and ca2.strip():
+                try:
+                    _lt, _ln, _lb = parse_dest(ca2)
+                    _pt = gpd.GeoDataFrame({"geometry": [_CmpPoint(_ln, _lt)]}, crs="EPSG:4326")
+                    _j  = gpd.sjoin(_pt, gdf[["iris_nom", "geometry"]],
+                                    how="left", predicate="within")
+                    _nm = _j.iloc[0].get("iris_nom") if not _j.empty else None
+                    if _nm and _nm in nom_to_code:
+                        st.session_state["cmp_d2"] = _nm
+                        st.rerun()
+                    else:
+                        st.warning(t("t1_search_notfound"))
+                except ValueError as e:
+                    st.error(str(e))
 
     col1, col_vs, col2 = st.columns([5, 1, 5])
     with col1:
