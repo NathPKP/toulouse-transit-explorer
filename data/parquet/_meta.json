@@ -1,0 +1,13 @@
+{
+  "source": "c:\\Users\\Nathan\\Documents\\tisseo-desserte\\data\\raw\\tisseo_gtfs_v2.zip",
+  "generated_at": "2026-04-18T12:14:45.225093",
+  "files": {
+    "stops": 5665,
+    "routes": 125,
+    "trips": 36325,
+    "calendar_dates": 241983,
+    "stop_times": 902355,
+    "shapes": 371
+  },
+  "duration_sec": 4.7
+}
