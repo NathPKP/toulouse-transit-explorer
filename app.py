@@ -8,12 +8,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "scripts"))
 
 import json
+import pickle
 
 import folium
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 from branca.colormap import LinearColormap
@@ -186,6 +188,11 @@ _L: dict[str, dict[str, str]] = {
         "err_no_stop"      : "Aucun arrêt Tisséo dans 500 m — essayez des coordonnées précises.",
         "err_min2"         : "Vérifiez au moins 2 adresses avant de lancer le calcul.",
         "computing"        : "Calcul en cours...",
+        # Quick wins
+        "t2_export"        : "Télécharger les résultats (CSV)",
+        "t3_export"        : "Télécharger le classement (CSV)",
+        "t5_radar"         : "Profil de desserte",
+        "t5_score_lbl"     : "Score global",
     },
     "en": {
         "app_title"        : "Tisséo Network — Toulouse",
@@ -344,6 +351,11 @@ _L: dict[str, dict[str, str]] = {
         "err_no_stop"      : "No Tisséo stop within 500 m — try precise coordinates.",
         "err_min2"         : "Verify at least 2 addresses before calculating.",
         "computing"        : "Computing...",
+        # Quick wins
+        "t2_export"        : "Download results (CSV)",
+        "t3_export"        : "Download ranking (CSV)",
+        "t5_radar"         : "Coverage profile",
+        "t5_score_lbl"     : "Overall score",
     },
 }
 
@@ -407,7 +419,8 @@ PALETTE    = ["#1a9850", "#91cf60", "#fee08b", "#fc8d59", "#d73027"]
 DEST_COLS  = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899"]
 DEST_ICONS = ["briefcase", "home", "university", "hospital-o", "star", "map-marker"]
 
-HOURLY_FILE = cfg.GEO / "hourly_indicators.parquet"
+HOURLY_FILE      = cfg.GEO / "hourly_indicators.parquet"
+PULSE_CACHE_PATH = cfg.GEO / "_pulse_figure.pkl"
 
 # ── Cached data loaders ───────────────────────────────────────────────────────
 
@@ -451,6 +464,94 @@ def run_commute_data(lat: float, lon: float, label: str, heure: int, marche: int
     con.close()
     result = compute_iris_commute(indicators, sp, st_df, wait, marche)
     return result, None
+
+
+# ── Pulse disk cache ─────────────────────────────────────────────────────────
+
+def _load_pulse_cache():
+    if not PULSE_CACHE_PATH.exists():
+        return None
+    if HOURLY_FILE.exists() and PULSE_CACHE_PATH.stat().st_mtime < HOURLY_FILE.stat().st_mtime:
+        return None
+    try:
+        with open(PULSE_CACHE_PATH, "rb") as f:
+            return pickle.load(f)
+    except Exception:
+        return None
+
+def _save_pulse_cache(fig):
+    try:
+        with open(PULSE_CACHE_PATH, "wb") as f:
+            pickle.dump(fig, f)
+    except Exception:
+        pass
+
+
+# ── URL state ────────────────────────────────────────────────────────────────
+
+def _init_from_query_params():
+    if st.session_state.get("_qp_loaded"):
+        return
+    st.session_state["_qp_loaded"] = True
+    params = st.query_params
+    if "lat" not in params:
+        return
+    try:
+        lat   = float(params["lat"])
+        lon   = float(params["lon"])
+        label = params.get("label", f"{lat:.5f}, {lon:.5f}")
+        addr  = params.get("addr", label)
+        h     = int(params.get("h", 8))
+        m_val = int(params.get("m", 800))
+        st.session_state.setdefault("c1_geo",  (lat, lon, label, addr))
+        st.session_state.setdefault("c1_addr", addr)
+        st.session_state.setdefault("c1_h",    h)
+        st.session_state.setdefault("c1_m",    m_val)
+    except (ValueError, KeyError):
+        pass
+
+
+# ── Radar chart ───────────────────────────────────────────────────────────────
+
+def build_radar_chart(r1, r2, name1, name2, gdf):
+    axes = [
+        (t("t5_amplitude"), "amplitude_h",     False),
+        (t("t5_freq"),      "freq_pointe_min",  True),
+        (t("t5_lines"),     "max_lignes",       False),
+        (t("t5_coverage"),  "coverage_pct",     False),
+        (t("t5_score_lbl"), "score_desserte",   False),
+    ]
+    labels = [a[0] for a in axes]
+    vals1, vals2 = [], []
+    for _, col, invert in axes:
+        col_min = float(gdf[col].min())
+        col_max = float(gdf[col].max())
+        rng = col_max - col_min or 1
+        v1 = float(r1.get(col) or col_min)
+        v2 = float(r2.get(col) or col_min)
+        n1 = (v1 - col_min) / rng * 100
+        n2 = (v2 - col_min) / rng * 100
+        if invert:
+            n1, n2 = 100 - n1, 100 - n2
+        vals1.append(round(n1, 1))
+        vals2.append(round(n2, 1))
+    # close the polygon
+    labels += [labels[0]]
+    vals1  += [vals1[0]]
+    vals2  += [vals2[0]]
+    fig = go.Figure()
+    fig.add_trace(go.Scatterpolar(
+        r=vals1, theta=labels, fill="toself", name=name1,
+        line_color="#3b82f6", fillcolor="rgba(59,130,246,0.15)"))
+    fig.add_trace(go.Scatterpolar(
+        r=vals2, theta=labels, fill="toself", name=name2,
+        line_color="#10b981", fillcolor="rgba(16,185,129,0.15)"))
+    fig.update_layout(
+        polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+        showlegend=True, height=380,
+        margin=dict(l=40, r=40, t=40, b=40),
+    )
+    return fig
 
 
 # ── UI helpers ────────────────────────────────────────────────────────────────
@@ -679,6 +780,11 @@ def page_commute():
                     st.session_state["c1_map_html"] = m.get_root().render()
                     st.session_state["c1_dest"]     = (lat, lon, label)
                     st.session_state["c1_params"]   = (heure, marche)
+                    st.query_params.update({
+                        "lat": f"{lat:.6f}", "lon": f"{lon:.6f}",
+                        "label": label, "addr": addr,
+                        "h": str(heure), "m": str(marche),
+                    })
 
     result   = st.session_state.get("c1_result")
     map_html = st.session_state.get("c1_map_html")
@@ -727,9 +833,10 @@ def page_commute():
         "_score"            : t("t2_col_score"),
         "categorie"         : t("t2_col_cat"),
     }
-    st.dataframe(
-        top.rename(columns=show_cols)[list(show_cols.values())],
-        use_container_width=True, hide_index=True)
+    df_export = top.rename(columns=show_cols)[list(show_cols.values())]
+    st.dataframe(df_export, use_container_width=True, hide_index=True)
+    st.download_button(t("t2_export"), df_export.to_csv(index=False),
+                       "top10_trajets.csv", "text/csv")
 
 
 # ── Tab 3: Multi-destination ──────────────────────────────────────────────────
@@ -1089,8 +1196,10 @@ def page_multi():
     rename.update({f"t_{lb}": lb for lb, *_ in dest_infos})
     show = ([t("t2_col_district"), t("t3_avg"), t("t3_worst"), t("t3_all_conn")]
             + [lb for lb, *_ in dest_infos] + [t("t3_score"), t("t3_cat")])
-    st.dataframe(top.rename(columns=rename)[show],
-                 use_container_width=True, hide_index=True)
+    df_export = top.rename(columns=rename)[show]
+    st.dataframe(df_export, use_container_width=True, hide_index=True)
+    st.download_button(t("t3_export"), df_export.to_csv(index=False),
+                       "top20_quartiers.csv", "text/csv")
 
 
 # ── Tab 4: Service Pulse ──────────────────────────────────────────────────────
@@ -1201,14 +1310,14 @@ def page_pulse():
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Animated choropleth (built once per session, rebuild if height changed) ─
-    cached_fig = st.session_state.get("pulse_figure")
-    if cached_fig is not None:
-        if cached_fig.layout.height != 820:
-            del st.session_state["pulse_figure"]
+    # ── Animated choropleth — disk-cached across sessions ────────────────────
     if "pulse_figure" not in st.session_state:
-        with st.spinner(t("computing")):
-            st.session_state.pulse_figure = build_pulse_figure(gdf, hourly)
+        fig = _load_pulse_cache()
+        if fig is None:
+            with st.spinner(t("computing")):
+                fig = build_pulse_figure(gdf, hourly)
+                _save_pulse_cache(fig)
+        st.session_state.pulse_figure = fig
 
     st.plotly_chart(
         st.session_state.pulse_figure,
@@ -1321,6 +1430,14 @@ def page_compare():
         with ca: mcard(s1, label)
         with cb: mcard(s2, label)
 
+    st.markdown("---")
+    st.markdown(f"**{t('t5_radar')}**")
+    st.plotly_chart(
+        build_radar_chart(r1, r2, d1_nom, d2_nom, gdf),
+        use_container_width=True,
+        config={"displayModeBar": False},
+    )
+
     if not hourly.empty:
         st.markdown("---")
         st.markdown(f"**{t('t5_hourly')}**")
@@ -1339,6 +1456,7 @@ def main():
     if "lang" not in st.session_state:
         st.session_state.lang = "fr"
 
+    _init_from_query_params()
     render_sidebar()
 
     st.markdown(

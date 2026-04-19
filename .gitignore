@@ -32,3 +32,6 @@ Thumbs.db
 # ── Jupyter ───────────────────────────────────────────────────────────────────
 .ipynb_checkpoints/
 *.ipynb
+
+# ── Generated caches ──────────────────────────────────────────────────────────
+data/geo/_pulse_figure.pkl
