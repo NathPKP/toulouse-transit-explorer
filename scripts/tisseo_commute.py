@@ -36,10 +36,12 @@ from branca.colormap import LinearColormap
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-INDICATORS_FILE   = GEO    / "quartiers_indicators.parquet"
-STOPS_FILE        = PARQUET / "stops.geoparquet"
-STOP_TIMES_FILE   = PARQUET / "stop_times.parquet"
-OUTPUT_DIR        = ROOT   / "outputs"
+INDICATORS_FILE      = GEO    / "quartiers_indicators.parquet"
+STOPS_FILE           = PARQUET / "stops.geoparquet"
+STOP_TIMES_FILE      = PARQUET / "stop_times.parquet"
+TRIPS_FILE           = PARQUET / "trips.parquet"
+CALENDAR_DATES_FILE  = PARQUET / "calendar_dates.parquet"
+OUTPUT_DIR           = ROOT   / "outputs"
 
 WALK_SPEED_MPM    = 80     # metres per minute (~4.8 km/h)
 WALK_MAX_DEST     = 500    # metres — search radius around destination
@@ -149,9 +151,37 @@ def find_dest_stops(sp: gpd.GeoDataFrame,
 
 # ── DuckDB connection ─────────────────────────────────────────────────────────
 
-def _open_con() -> duckdb.DuckDBPyConnection:
+def _open_con(day_type: str = "weekday") -> duckdb.DuckDBPyConnection:
+    """
+    Open a DuckDB connection with a `st` view filtered by day type.
+    day_type: "weekday" | "saturday" | "sunday"
+    """
     con = duckdb.connect()
-    con.execute(f"CREATE VIEW st AS SELECT * FROM read_parquet('{STOP_TIMES_FILE}')")
+
+    # Map day_type to DuckDB dayofweek values (0=Sun, 1=Mon, …, 6=Sat)
+    _dow = {
+        "weekday" : "(1, 2, 3, 4, 5)",
+        "saturday": "(6,)",
+        "sunday"  : "(0,)",
+    }.get(day_type, "(1, 2, 3, 4, 5)")
+
+    if CALENDAR_DATES_FILE.exists() and TRIPS_FILE.exists():
+        con.execute(f"""
+            CREATE VIEW st AS
+            SELECT s.*
+            FROM read_parquet('{STOP_TIMES_FILE}') s
+            JOIN (
+                SELECT DISTINCT t.trip_id
+                FROM read_parquet('{TRIPS_FILE}') t
+                JOIN read_parquet('{CALENDAR_DATES_FILE}') cd
+                  ON t.service_id = cd.service_id
+                WHERE cd.exception_type = 1
+                  AND dayofweek(strptime(CAST(cd.date AS VARCHAR), '%Y%m%d')) IN {_dow}
+            ) valid ON s.trip_id = valid.trip_id
+        """)
+    else:
+        con.execute(f"CREATE VIEW st AS SELECT * FROM read_parquet('{STOP_TIMES_FILE}')")
+
     return con
 
 
