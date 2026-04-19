@@ -199,7 +199,7 @@ _L: dict[str, dict[str, str]] = {
         "cmp_find_b"       : "Adresse → Quartier B",
         "cmp_locate"       : "Localiser",
         "err_min2"         : "Saisissez au moins 2 adresses avant de lancer le calcul.",
-        "t3_click_tip"     : "Cliquez une ligne pour la surligner sur la carte",
+        "t3_click_tip"     : "Surligner un quartier sur la carte",
     },
     "en": {
         "app_title"        : "Tisséo Network — Toulouse",
@@ -369,7 +369,7 @@ _L: dict[str, dict[str, str]] = {
         "cmp_find_b"       : "Address → District B",
         "cmp_locate"       : "Locate",
         "err_min2"         : "Enter at least 2 addresses before calculating.",
-        "t3_click_tip"     : "Click a row to highlight it on the map",
+        "t3_click_tip"     : "Highlight a district on the map",
     },
 }
 
@@ -757,12 +757,22 @@ def page_desserte():
         with st.spinner("Construction de la carte…"):
             m = build_desserte_map(gdf)
             if found and found.get("iris_nom"):
-                folium.Marker(
+                hl = gdf[gdf["iris_code"] == found["iris_code"]]
+                if not hl.empty:
+                    folium.GeoJson(
+                        hl[["geometry"]].__geo_interface__,
+                        style_function=lambda _: {
+                            "fillColor": "transparent", "color": "#1d4ed8",
+                            "weight": 3, "fillOpacity": 0,
+                        },
+                    ).add_to(m)
+                folium.CircleMarker(
                     [found["lat"], found["lon"]],
+                    radius=8, color="#1d4ed8",
+                    fill=True, fill_color="#3b82f6", fill_opacity=0.85,
                     tooltip=found["label"],
                     popup=folium.Popup(
                         f"<b>{found['label']}</b><br>{found['iris_nom']}", max_width=200),
-                    icon=folium.Icon(color="blue", icon="map-marker", prefix="fa"),
                 ).add_to(m)
             st.session_state.desserte_html = _add_scroll_zoom(m.get_root().render())
     components.html(st.session_state.desserte_html, height=740)
@@ -1009,21 +1019,38 @@ def build_multi_map(combined, dest_infos, highlight_code=None):
     m = folium.Map(location=[c.y, c.x], zoom_start=12, tiles="CartoDB positron",
                    attr="© OpenStreetMap contributors © CARTO",
                    scrollWheelZoom=False)
-    fg = folium.FeatureGroup(name="Avg. commute", show=True)
-    for _, row in combined.iterrows():
-        w     = row.get("commute_weighted")
-        color = cmap(min(w, COMMUTE_CAP)) if not pd.isna(w) else "#cccccc"
-        nom   = row.get("iris_nom", "")
-        tip   = f"{nom} — {w:.0f} min" if not pd.isna(w) else f"{nom} — incomplete link"
-        is_hl = highlight_code and row.get("iris_code") == highlight_code
-        folium.GeoJson(row.geometry.__geo_interface__,
-            style_function=lambda _, c=color, h=is_hl: {
-                "fillColor": c, "color": "#1d4ed8" if h else "#555",
-                "weight": 3 if h else 0.5, "fillOpacity": 0.92 if h else 0.78},
-            tooltip=folium.Tooltip(tip, sticky=True),
-            popup=folium.Popup(_multi_popup(row, dest_infos), max_width=280),
-        ).add_to(fg)
-    fg.add_to(m)
+
+    # Single bulk GeoJson — much faster than per-row calls
+    disp = combined[["iris_code", "iris_nom", "commute_weighted",
+                      "all_connected", "geometry"]].copy()
+    for label, *_ in dest_infos:
+        disp[label[:20]] = combined[f"t_{label}"].map(
+            lambda x: f"{x:.0f} min" if not pd.isna(x) else "—")
+    disp["Moy."] = disp["commute_weighted"].map(
+        lambda x: f"{x:.0f} min" if not pd.isna(x) else "—")
+    disp["_fill"] = disp["commute_weighted"].apply(
+        lambda w: cmap(min(w, COMMUTE_CAP)) if not pd.isna(w) else "#cccccc")
+    disp["_hl"]   = disp["iris_code"].eq(highlight_code).astype(int) \
+                    if highlight_code else 0
+    disp["_tip"]  = disp.apply(
+        lambda r: f"{r['iris_nom']} — {r['commute_weighted']:.0f} min"
+                  if not pd.isna(r["commute_weighted"])
+                  else f"{r['iris_nom']} — liaison incomplète", axis=1)
+
+    popup_fields  = ["iris_nom", "Moy."] + [lb[:20] for lb, *_ in dest_infos]
+    popup_aliases = ["Quartier", "Moy."] + [lb[:20] for lb, *_ in dest_infos]
+    folium.GeoJson(
+        disp,
+        style_function=lambda f: {
+            "fillColor":   f["properties"]["_fill"],
+            "color":       "#1d4ed8" if f["properties"]["_hl"] else "#555",
+            "weight":      3.0       if f["properties"]["_hl"] else 0.5,
+            "fillOpacity": 0.92      if f["properties"]["_hl"] else 0.78,
+        },
+        tooltip=folium.GeoJsonTooltip(["_tip"], aliases=[""], labels=False, sticky=True),
+        popup=folium.GeoJsonPopup(popup_fields, aliases=popup_aliases,
+                                  labels=True, max_width=280),
+    ).add_to(m)
     cmap.add_to(m)
     for i, (label, lat, lon, w) in enumerate(dest_infos):
         total_w = sum(x for *_, x in dest_infos)
@@ -1156,22 +1183,27 @@ def page_multi():
     st.session_state["md_last_h"] = heure
     st.session_state["md_last_m"] = marche
 
-    run_btn = st.button(t("t3_run"), type="primary", use_container_width=True, key="md_run")
+    _pending = st.session_state.pop("md_pending_compute", False)
+    run_btn  = st.button(t("t3_run"), type="primary", use_container_width=True, key="md_run")
 
-    if run_btn:
+    if run_btn or _pending:
         dests_with_addr = [d for d in dests if d["address"].strip()]
         if len(dests_with_addr) < 2:
             st.error(t("err_min2"))
             st.stop()
 
-        # Auto-geocode any address not yet verified (optimisation: skip if cached)
-        for d in dests_with_addr:
-            if d["id"] not in st.session_state.md_geo:
+        # Auto-geocode unverified — on first click rerun to show badges, then compute
+        needs_geocode = [d for d in dests_with_addr if d["id"] not in st.session_state.md_geo]
+        if needs_geocode:
+            for d in needs_geocode:
                 try:
                     lat_g, lon_g, lbl_g = parse_dest(d["address"])
                     st.session_state.md_geo[d["id"]] = (lat_g, lon_g, lbl_g)
                 except ValueError as e:
                     st.error(f"{d['name']}: {e}")
+            if not _pending:
+                st.session_state["md_pending_compute"] = True
+                st.rerun()
 
         dests_ok = [d for d in dests_with_addr if st.session_state.md_geo.get(d["id"])]
         if len(dests_ok) < 2:
@@ -1280,22 +1312,33 @@ def page_multi():
     with cols[-1]: mcard(str(int(wt.isna().sum())),                  t("t3_nolink"),   "#94a3b8")
     st.markdown("<br>", unsafe_allow_html=True)
 
-    if st.session_state.md_map is None:
-        with st.spinner("Construction de la carte…"):
-            m = build_multi_map(combined, dest_infos,
-                                highlight_code=st.session_state.get("md_highlight"))
-            st.session_state.md_map = _add_scroll_zoom(m.get_root().render())
-    components.html(st.session_state.md_map, height=740)
-
     st.markdown("---")
     st.markdown(f"**{t('t3_top')}**")
-    st.caption(t("t3_click_tip"))
     t_cols = [f"t_{label}" for label, *_ in dest_infos]
     top = (combined.dropna(subset=["commute_weighted"])
            .nsmallest(20, "commute_weighted")
            [["iris_code", "iris_nom", "commute_weighted", "commute_max", "all_connected",
              "score_desserte", "categorie"] + t_cols].copy()
            .reset_index(drop=True))
+
+    # Detect selectbox state BEFORE rendering the map so the highlight is applied
+    _hl_options = ["—"] + top["iris_nom"].tolist()
+    _hl_nom     = st.session_state.get("md_hl_select", "—")
+    if _hl_nom != "—" and _hl_nom in top["iris_nom"].values:
+        _new_hl = top.loc[top["iris_nom"] == _hl_nom, "iris_code"].iloc[0]
+        if _new_hl != st.session_state.get("md_highlight"):
+            st.session_state.md_highlight = _new_hl
+            st.session_state.md_map = None
+    elif _hl_nom == "—" and st.session_state.get("md_highlight"):
+        st.session_state.md_highlight = None
+        st.session_state.md_map = None
+
+    if st.session_state.md_map is None:
+        with st.spinner("Construction de la carte…"):
+            m = build_multi_map(combined, dest_infos,
+                                highlight_code=st.session_state.get("md_highlight"))
+            st.session_state.md_map = _add_scroll_zoom(m.get_root().render())
+    components.html(st.session_state.md_map, height=740)
     top[t("t3_avg")]      = top["commute_weighted"].map(lambda x: f"{x:.0f} min")
     top[t("t3_worst")]    = top["commute_max"].map(lambda x: f"{x:.0f} min")
     _is_fr = st.session_state.get("lang", "fr") == "fr"
@@ -1310,14 +1353,10 @@ def page_multi():
     show = ([t("t2_col_district"), t("t3_avg"), t("t3_worst"), t("t3_all_conn")]
             + [lb for lb, *_ in dest_infos] + [t("t3_score"), t("t3_cat")])
     df_export = top.rename(columns=rename)[show]
-    event = st.dataframe(df_export, use_container_width=True, hide_index=True,
-                         on_select="rerun", selection_mode="single-row")
-    if event.selection.rows:
-        new_code = top.iloc[event.selection.rows[0]]["iris_code"]
-        if new_code != st.session_state.get("md_highlight"):
-            st.session_state.md_highlight = new_code
-            st.session_state.md_map = None
-            st.rerun()
+    st.dataframe(df_export, use_container_width=True, hide_index=True)
+    st.selectbox(t("t3_click_tip"), _hl_options, key="md_hl_select",
+                 label_visibility="collapsed")
+    st.caption(t("t3_click_tip"))
     st.download_button(t("t3_export"), df_export.to_csv(index=False),
                        "top20_quartiers.csv", "text/csv")
 
