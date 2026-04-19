@@ -21,5 +21,8 @@ plotly>=5.15           # Animated choropleth (Service Pulse)
 # Web app
 streamlit>=1.35        # Dashboard framework
 
+# Testing
+pytest>=8.0
+
 # GTFS ingestion (optional — only needed for re-ingesting raw GTFS)
 # partridge>=1.1

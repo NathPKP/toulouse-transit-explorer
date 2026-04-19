@@ -143,6 +143,26 @@ _L: dict[str, dict[str, str]] = {
         "t4_stops"         : "Arrêts",
         "t4_freq"          : "Intervalle",
         "t4_top"           : "Top 10 quartiers — heure de pointe",
+        # Tab 5 — Compare
+        "tab_compare"       : "Comparer",
+        "t5_title"          : "Comparer deux quartiers",
+        "t5_caption"        : "Sélectionnez deux quartiers IRIS pour comparer leurs indicateurs de desserte côte à côte.",
+        "t5_d1"             : "Quartier A",
+        "t5_d2"             : "Quartier B",
+        "t5_same"           : "Sélectionnez deux quartiers différents.",
+        "t5_hourly"         : "Activité horaire comparée",
+        "t5_amplitude"      : "Amplitude",
+        "t5_freq"           : "Fréq. pointe",
+        "t5_lines"          : "Lignes max",
+        "t5_coverage"       : "Couverture spatiale",
+        "t5_area"           : "Surface",
+        "t5_passages"       : "Passages / jour",
+        # Address search (Tab 1)
+        "t1_search_label"   : "Trouver mon quartier",
+        "t1_search_ph"      : "Adresse ou nom de lieu...",
+        "t1_search_btn"     : "Localiser",
+        "t1_search_ok"      : "est dans le quartier",
+        "t1_search_notfound": "Adresse hors du périmètre ou introuvable.",
         # Sidebar
         "sb_settings"      : "Paramètres",
         "sb_data"          : "Sources de données",
@@ -281,6 +301,26 @@ _L: dict[str, dict[str, str]] = {
         "t4_stops"         : "Stops",
         "t4_freq"          : "Interval",
         "t4_top"           : "Top 10 districts — peak hour",
+        # Tab 5 — Compare
+        "tab_compare"       : "Compare",
+        "t5_title"          : "Compare two districts",
+        "t5_caption"        : "Select two IRIS districts to compare their transit coverage indicators side by side.",
+        "t5_d1"             : "District A",
+        "t5_d2"             : "District B",
+        "t5_same"           : "Please select two different districts.",
+        "t5_hourly"         : "Hourly activity comparison",
+        "t5_amplitude"      : "Amplitude",
+        "t5_freq"           : "Peak frequency",
+        "t5_lines"          : "Max lines",
+        "t5_coverage"       : "Spatial coverage",
+        "t5_area"           : "Area",
+        "t5_passages"       : "Trips / day",
+        # Address search (Tab 1)
+        "t1_search_label"   : "Find my district",
+        "t1_search_ph"      : "Address or place name...",
+        "t1_search_btn"     : "Locate",
+        "t1_search_ok"      : "is in district",
+        "t1_search_notfound": "Address outside the Toulouse perimeter or not found.",
         # Sidebar
         "sb_settings"      : "Settings",
         "sb_data"          : "Data sources",
@@ -353,6 +393,14 @@ st.markdown("""
 
   div[data-testid="stForm"]{border:none;padding:0}
   section[data-testid="stSidebar"] .block-container{padding-top:0.5rem}
+
+  @media (max-width: 768px) {
+    .mcard .val{font-size:16px !important}
+    .mcard{padding:8px 6px}
+    .step-title{font-size:13px}
+    .dest-card{padding:8px 10px}
+    .block-container{padding-left:0.5rem !important;padding-right:0.5rem !important}
+  }
 </style>""", unsafe_allow_html=True)
 
 PALETTE    = ["#1a9850", "#91cf60", "#fee08b", "#fc8d59", "#d73027"]
@@ -478,9 +526,76 @@ def page_desserte():
 
     st.markdown("<br>", unsafe_allow_html=True)
 
+    # ── Address search ────────────────────────────────────────────────────────
+    st.markdown(f"**{t('t1_search_label')}**")
+    col_addr, col_btn = st.columns([7, 1])
+    with col_addr:
+        search_addr = st.text_input(
+            t("t1_search_label"), key="d_search_addr",
+            placeholder=t("t1_search_ph"), label_visibility="collapsed")
+    with col_btn:
+        st.markdown("<br>", unsafe_allow_html=True)
+        search_btn = st.button(t("t1_search_btn"), key="d_search_btn",
+                               use_container_width=True)
+
+    if search_btn and search_addr.strip():
+        try:
+            lat, lon, label = parse_dest(search_addr)
+            from shapely.geometry import Point as _Point
+            pt = gpd.GeoDataFrame({"geometry": [_Point(lon, lat)]}, crs="EPSG:4326")
+            joined = gpd.sjoin(
+                pt,
+                gdf[["iris_nom", "iris_code", "score_desserte", "categorie", "geometry"]],
+                how="left", predicate="within",
+            )
+            if not joined.empty and not pd.isna(joined.iloc[0].get("iris_code")):
+                r = joined.iloc[0]
+                st.session_state["d_found"] = {
+                    "lat": lat, "lon": lon, "label": label, "addr": search_addr,
+                    "iris_nom": r["iris_nom"], "iris_code": r["iris_code"],
+                    "score": r["score_desserte"], "cat": str(r["categorie"]),
+                }
+            else:
+                st.session_state["d_found"] = {
+                    "lat": lat, "lon": lon, "label": label,
+                    "addr": search_addr, "iris_nom": None,
+                }
+            st.session_state.pop("desserte_html", None)
+        except ValueError as e:
+            st.error(str(e))
+
+    _CAT_COL = {"bien desservi": "#1a9850", "moyen": "#f59e0b",
+                "sous-desservi": "#d73027"}
+    found = st.session_state.get("d_found")
+    if found and found.get("addr") == search_addr and search_addr.strip():
+        if found.get("iris_nom"):
+            cat    = found["cat"]
+            cc     = _CAT_COL.get(cat, "#94a3b8")
+            sc_str = f"{found['score']:.0f}/100" if not pd.isna(found["score"]) else "—"
+            st.markdown(
+                f'<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;'
+                f'padding:10px 16px;margin-bottom:8px">'
+                f'&#128205; <b>{found["label"]}</b> {t("t1_search_ok")} '
+                f'<b>{found["iris_nom"]}</b> — Score : '
+                f'<b style="color:{cc}">{sc_str}</b> '
+                f'<span style="background:{cc};color:#fff;font-size:10px;'
+                f'padding:2px 8px;border-radius:8px;margin-left:4px">{cat}</span>'
+                f'</div>',
+                unsafe_allow_html=True)
+        else:
+            st.warning(t("t1_search_notfound"))
+
     if "desserte_html" not in st.session_state:
         with st.spinner("Construction de la carte…"):
             m = build_desserte_map(gdf)
+            if found and found.get("iris_nom"):
+                folium.Marker(
+                    [found["lat"], found["lon"]],
+                    tooltip=found["label"],
+                    popup=folium.Popup(
+                        f"<b>{found['label']}</b><br>{found['iris_nom']}", max_width=200),
+                    icon=folium.Icon(color="blue", icon="map-marker", prefix="fa"),
+                ).add_to(m)
             st.session_state.desserte_html = m.get_root().render()
     components.html(st.session_state.desserte_html, height=740)
 
@@ -1129,6 +1244,94 @@ def page_pulse():
         st.dataframe(top, use_container_width=True, hide_index=True)
 
 
+# ── Tab 5: District comparison ────────────────────────────────────────────────
+
+def page_compare():
+    st.subheader(t("t5_title"))
+    st.caption(t("t5_caption"))
+
+    gdf    = get_desserte_data()
+    hourly = get_hourly_data()
+
+    code_to_nom = gdf[["iris_code", "iris_nom"]].dropna().set_index("iris_code")["iris_nom"].to_dict()
+    nom_to_code = {v: k for k, v in code_to_nom.items()}
+    districts   = sorted(nom_to_code.keys())
+
+    CAT_COL = {"bien desservi": "#1a9850", "moyen": "#f59e0b",
+               "sous-desservi": "#d73027"}
+
+    col1, col_vs, col2 = st.columns([5, 1, 5])
+    with col1:
+        d1_nom = st.selectbox(t("t5_d1"), districts, index=0, key="cmp_d1")
+    with col_vs:
+        st.markdown(
+            "<div style='text-align:center;padding-top:28px;font-size:18px;"
+            "font-weight:700;color:#94a3b8'>VS</div>",
+            unsafe_allow_html=True)
+    with col2:
+        d2_nom = st.selectbox(t("t5_d2"), districts,
+                              index=min(1, len(districts) - 1), key="cmp_d2")
+
+    if d1_nom == d2_nom:
+        st.info(t("t5_same"))
+        return
+
+    d1_code = nom_to_code[d1_nom]
+    d2_code = nom_to_code[d2_nom]
+    r1 = gdf[gdf["iris_code"] == d1_code].iloc[0]
+    r2 = gdf[gdf["iris_code"] == d2_code].iloc[0]
+
+    def score_card(row, name):
+        sc  = row.get("score_desserte")
+        cat = str(row.get("categorie", ""))
+        cc  = CAT_COL.get(cat, "#94a3b8")
+        sc_str = f"{sc:.0f}" if not pd.isna(sc) else "—"
+        st.markdown(
+            f'<div class="mcard" style="border-top:4px solid {cc}">'
+            f'<div class="val" style="color:{cc};font-size:30px">{sc_str}'
+            f'<span style="font-size:14px;color:#94a3b8;font-weight:400">/100</span></div>'
+            f'<div class="lbl" style="font-size:13px;color:#1e293b;font-weight:600;'
+            f'margin-top:6px">{name}</div>'
+            f'<div style="font-size:11px;color:{cc};margin-top:3px">{cat}</div>'
+            f'</div>',
+            unsafe_allow_html=True)
+
+    st.markdown("---")
+    ca, _, cb = st.columns([5, 1, 5])
+    with ca: score_card(r1, d1_nom)
+    with cb: score_card(r2, d2_nom)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    metrics = [
+        (t("t5_amplitude"), "amplitude_h",      "{:.0f} h"),
+        (t("t5_freq"),      "freq_pointe_min",   "{:.1f} min"),
+        (t("t5_lines"),     "max_lignes",        "{:.0f}"),
+        (t("t5_coverage"),  "coverage_pct",      "{:.1f} %"),
+        (t("t5_area"),      "area_km2",          "{:.2f} km²"),
+        (t("t5_passages"),  "total_passages",    "{:.0f}"),
+    ]
+    for label, col_key, fmt in metrics:
+        v1 = r1.get(col_key)
+        v2 = r2.get(col_key)
+        s1 = fmt.format(v1) if not pd.isna(v1) else "—"
+        s2 = fmt.format(v2) if not pd.isna(v2) else "—"
+        ca, _, cb = st.columns([5, 1, 5])
+        with ca: mcard(s1, label)
+        with cb: mcard(s2, label)
+
+    if not hourly.empty:
+        st.markdown("---")
+        st.markdown(f"**{t('t5_hourly')}**")
+        h1 = (hourly[hourly["iris_code"] == d1_code][["heure", "nb_passages"]]
+              .rename(columns={"nb_passages": d1_nom}))
+        h2 = (hourly[hourly["iris_code"] == d2_code][["heure", "nb_passages"]]
+              .rename(columns={"nb_passages": d2_nom}))
+        hm = h1.merge(h2, on="heure", how="outer").sort_values("heure")
+        hm.index = hm["heure"].astype(str).str.zfill(2) + ":00"
+        st.line_chart(hm[[d1_nom, d2_nom]], use_container_width=True, height=220)
+
+
 # ── Main navigation ───────────────────────────────────────────────────────────
 
 def main():
@@ -1143,16 +1346,18 @@ def main():
         f"{t('app_sub')}</p>",
         unsafe_allow_html=True)
 
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         t("tab_network"),
         t("tab_commute"),
         t("tab_multi"),
         t("tab_pulse"),
+        t("tab_compare"),
     ])
     with tab1: page_desserte()
     with tab2: page_commute()
     with tab3: page_multi()
     with tab4: page_pulse()
+    with tab5: page_compare()
 
 
 if __name__ == "__main__":
