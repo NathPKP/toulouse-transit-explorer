@@ -188,6 +188,7 @@ _L: dict[str, dict[str, str]] = {
         "err_no_stop"      : "Aucun arrêt Tisséo dans 500 m — essayez des coordonnées précises.",
         "err_min2"         : "Vérifiez au moins 2 adresses avant de lancer le calcul.",
         "computing"        : "Calcul en cours...",
+        "t3_restored"      : "Destinations restaurées depuis le lien — cliquez sur Calculer pour lancer l'analyse.",
         # Quick wins
         "t2_export"        : "Télécharger les résultats (CSV)",
         "t3_export"        : "Télécharger le classement (CSV)",
@@ -357,6 +358,7 @@ _L: dict[str, dict[str, str]] = {
         "err_no_stop"      : "No Tisséo stop within 500 m — try precise coordinates.",
         "err_min2"         : "Verify at least 2 addresses before calculating.",
         "computing"        : "Computing...",
+        "t3_restored"      : "Destinations restored from shared link — click Calculate to run the analysis.",
         # Quick wins
         "t2_export"        : "Download results (CSV)",
         "t3_export"        : "Download ranking (CSV)",
@@ -520,21 +522,56 @@ def _init_from_query_params():
         return
     st.session_state["_qp_loaded"] = True
     params = st.query_params
-    if "lat" not in params:
-        return
-    try:
-        lat   = float(params["lat"])
-        lon   = float(params["lon"])
-        label = params.get("label", f"{lat:.5f}, {lon:.5f}")
-        addr  = params.get("addr", label)
-        h     = int(params.get("h", 8))
-        m_val = int(params.get("m", 800))
-        st.session_state.setdefault("c1_geo",  (lat, lon, label, addr))
-        st.session_state.setdefault("c1_addr", addr)
-        st.session_state.setdefault("c1_h",    h)
-        st.session_state.setdefault("c1_m",    m_val)
-    except (ValueError, KeyError):
-        pass
+
+    # Tab 2 — single commute
+    if "lat" in params:
+        try:
+            lat   = float(params["lat"])
+            lon   = float(params["lon"])
+            label = params.get("label", f"{lat:.5f}, {lon:.5f}")
+            addr  = params.get("addr", label)
+            h     = int(params.get("h", 8))
+            m_val = int(params.get("m", 800))
+            st.session_state.setdefault("c1_geo",  (lat, lon, label, addr))
+            st.session_state.setdefault("c1_addr", addr)
+            st.session_state.setdefault("c1_h",    h)
+            st.session_state.setdefault("c1_m",    m_val)
+        except (ValueError, KeyError):
+            pass
+
+    # Tab 3 — multi-destination
+    if "d0_lat" in params and "md_dests" not in st.session_state:
+        dests, geo = [], {}
+        for i in range(6):
+            if f"d{i}_lat" not in params:
+                break
+            try:
+                _lat = float(params[f"d{i}_lat"])
+                _lon = float(params[f"d{i}_lon"])
+                _lbl = params.get(f"d{i}_lbl", f"{_lat:.5f},{_lon:.5f}")
+                _w   = int(params.get(f"d{i}_w", 5))
+                _n   = params.get(f"d{i}_n",   f"Destination {i+1}")
+                dests.append({"id": i, "name": _n, "address": _lbl, "weight": _w})
+                geo[i] = (_lat, _lon, _lbl)
+            except (ValueError, KeyError):
+                break
+        if len(dests) >= 2:
+            st.session_state["md_dests"]      = dests
+            st.session_state["md_next"]       = len(dests)
+            st.session_state["md_geo"]        = geo
+            st.session_state["md_params"]     = {}
+            st.session_state["md_data"]       = {}
+            st.session_state["md_combined"]   = None
+            st.session_state["md_dest_infos"] = []
+            st.session_state["md_map"]        = None
+            st.session_state["md_restored"]   = True
+        try:
+            if "md_h" in params:
+                st.session_state.setdefault("md_h", int(params["md_h"]))
+            if "md_m" in params:
+                st.session_state.setdefault("md_m", int(params["md_m"]))
+        except (ValueError, KeyError):
+            pass
 
 
 # ── Radar chart ───────────────────────────────────────────────────────────────
@@ -810,6 +847,7 @@ def page_commute():
                     st.session_state["c1_map_html"] = _add_scroll_zoom(m.get_root().render())
                     st.session_state["c1_dest"]     = (lat, lon, label)
                     st.session_state["c1_params"]   = (heure, marche)
+                    st.query_params.clear()
                     st.query_params.update({
                         "lat": f"{lat:.6f}", "lon": f"{lon:.6f}",
                         "label": label, "addr": addr,
@@ -1010,6 +1048,9 @@ def page_multi():
     indicators = get_desserte_data()
     dests      = st.session_state.md_dests
 
+    if st.session_state.pop("md_restored", False):
+        st.info(t("t3_restored"))
+
     st.subheader(t("t3_title"))
     st.caption(t("t3_caption"))
 
@@ -1167,6 +1208,16 @@ def page_multi():
             st.session_state.md_combined   = combine_commutes(ready, indicators)
             st.session_state.md_dest_infos = [(lb, la, lo, w) for _, lb, la, lo, w in ready]
             st.session_state.md_map        = None
+            _qp = {"md_h": str(heure), "md_m": str(marche)}
+            for _i, _d in enumerate(dests_ok):
+                _g = st.session_state.md_geo[_d["id"]]
+                _qp[f"d{_i}_n"]   = _d["name"]
+                _qp[f"d{_i}_lat"] = f"{_g[0]:.6f}"
+                _qp[f"d{_i}_lon"] = f"{_g[1]:.6f}"
+                _qp[f"d{_i}_lbl"] = _g[2]
+                _qp[f"d{_i}_w"]   = str(_d["weight"])
+            st.query_params.clear()
+            st.query_params.update(_qp)
 
     dests_computed = [d for d in dests if d["id"] in st.session_state.md_data]
     if len(dests_computed) >= 2:
@@ -1194,6 +1245,20 @@ def page_multi():
                     st.session_state.md_dest_infos = [(lb, la, lo, w)
                                                       for _, lb, la, lo, w in ready]
                     st.session_state.md_map        = None
+                    _qp2 = {
+                        "md_h": str(st.session_state.get("md_h", 8)),
+                        "md_m": str(st.session_state.get("md_m", 800)),
+                    }
+                    for _i, _d in enumerate(dests_computed):
+                        _g = st.session_state.md_geo.get(_d["id"])
+                        if _g:
+                            _qp2[f"d{_i}_n"]   = _d["name"]
+                            _qp2[f"d{_i}_lat"] = f"{_g[0]:.6f}"
+                            _qp2[f"d{_i}_lon"] = f"{_g[1]:.6f}"
+                            _qp2[f"d{_i}_lbl"] = _g[2]
+                            _qp2[f"d{_i}_w"]   = str(_d["weight"])
+                    st.query_params.clear()
+                    st.query_params.update(_qp2)
 
     combined   = st.session_state.md_combined
     dest_infos = st.session_state.md_dest_infos
