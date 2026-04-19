@@ -35,3 +35,4 @@ Thumbs.db
 
 # ── Generated caches ──────────────────────────────────────────────────────────
 data/geo/_pulse_figure.pkl
+.claude/
