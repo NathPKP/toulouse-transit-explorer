@@ -12,9 +12,9 @@ Built with Python, Streamlit, GeoPandas, DuckDB, Folium and Plotly.
 
 | Tab | Description |
 |-----|-------------|
-| **Network Coverage** | Choropleth map scoring each IRIS district (0–100) on 4 dimensions: service hours, peak frequency, line diversity, and spatial coverage. Address search to instantly locate any district |
-| **My Commute** | Estimate transit travel time from every district to any destination — direct trips, 1 transfer, 2 transfers, with inter-stop walking (≤400 m) |
-| **Multiple Destinations** | Weighted average commute from every district to several workplaces/places — helps choose where to live |
+| **Network Coverage** | Plotly choropleth scoring each IRIS district (0–100) on 4 dimensions: service hours, peak frequency, line diversity, and spatial coverage. Click any district to see a detail card above the map. Address search to instantly locate any district. Cross-tab highlight: selecting a district in Multiple Destinations outlines it here automatically |
+| **My Commute** | Estimate transit travel time from every district to any destination — direct trips, 1 transfer, 2 transfers, with inter-stop walking (≤400 m). Filter by day type: weekday, Saturday, or Sunday |
+| **Multiple Destinations** | Weighted average commute from every district to several workplaces/places — helps choose where to live. Filter by day type. Selecting a district draws its outline and cross-highlights it on the Network Coverage tab |
 | **Service Pulse** | Animated hourly choropleth showing how service intensity evolves from 5 am to 11 pm, with a daily timeline chart |
 | **Compare** | Side-by-side comparison of two IRIS districts across all coverage indicators and hourly activity |
 
@@ -112,6 +112,7 @@ tisseo_gtfs_v2.zip
             ├── stops.geoparquet
             ├── routes.parquet
             ├── trips.parquet
+            ├── calendar_dates.parquet
             └── stop_times.parquet  <- main analytical table
 
 stops.geoparquet + stop_times.parquet
@@ -130,6 +131,8 @@ stops.geoparquet + stop_times.parquet
 
 Total time = walk to stop + wait (½ headway) + vehicle ride + transfer penalties.
 
+Day-type filtering (weekday / Saturday / Sunday) is applied at query time via `calendar_dates.parquet`: only trips whose service ID is active on the selected day type are included.
+
 ### Coverage score formula
 
 ```
@@ -140,6 +143,27 @@ score = 25% x amplitude_rank
 ```
 
 All components are normalised by **percentile rank** across all served districts, then rescaled to 0–100. Spatial coverage = % of district area within 500 m of an active stop (penalises large sparsely-served districts).
+
+---
+
+## Dependencies & Licenses
+
+All dependencies use permissive licenses — no copyleft, no obligation to open-source your own code.
+
+| Library | License |
+|---------|---------|
+| pandas | BSD-3-Clause |
+| pyarrow | Apache-2.0 |
+| geopandas | BSD-3-Clause |
+| shapely | BSD-3-Clause |
+| duckdb | MIT |
+| numpy | BSD-3-Clause |
+| requests | Apache-2.0 |
+| folium | MIT |
+| branca | MIT |
+| plotly | MIT |
+| streamlit | Apache-2.0 |
+| pytest | MIT |
 
 ---
 
