@@ -2,6 +2,8 @@
 
 > Interactive transit coverage and accessibility analysis for the **Tisséo** network in Toulouse, France.
 
+[![Live App](https://img.shields.io/badge/Live%20App-toulouse--transit--explorer.streamlit.app-1d4ed8?logo=streamlit&logoColor=white)](https://toulouse-transit-explorer.streamlit.app/)
+
 Built with Python, Streamlit, GeoPandas, DuckDB, Folium and Plotly.
 
 ---
