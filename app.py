@@ -764,6 +764,11 @@ def page_desserte():
         else:
             st.warning(t("t1_search_notfound"))
 
+    # Invalidate desserte map if the multi-dest highlight changed
+    _md_hl = st.session_state.get("md_highlight")
+    if st.session_state.get("_desserte_md_hl") != _md_hl:
+        st.session_state.pop("desserte_html", None)
+
     if "desserte_html" not in st.session_state:
         with st.spinner("Construction de la carte…"):
             m = build_desserte_map(gdf)
@@ -785,7 +790,21 @@ def page_desserte():
                     popup=folium.Popup(
                         f"<b>{found['label']}</b><br>{found['iris_nom']}", max_width=200),
                 ).add_to(m)
-            st.session_state.desserte_html = _add_scroll_zoom(m.get_root().render())
+            # Highlight district selected in multi-destination tab
+            if _md_hl:
+                hl_md = gdf[gdf["iris_code"] == _md_hl]
+                if not hl_md.empty:
+                    nom_md = hl_md.iloc[0].get("iris_nom", "")
+                    folium.GeoJson(
+                        hl_md[["geometry"]].__geo_interface__,
+                        style_function=lambda _: {
+                            "fillColor": "transparent", "color": "#f59e0b",
+                            "weight": 3, "fillOpacity": 0,
+                        },
+                        tooltip=folium.Tooltip(nom_md, sticky=True),
+                    ).add_to(m)
+            st.session_state.desserte_html    = _add_scroll_zoom(m.get_root().render())
+            st.session_state["_desserte_md_hl"] = _md_hl
     components.html(st.session_state.desserte_html, height=740)
 
 
