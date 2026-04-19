@@ -832,7 +832,8 @@ def build_multi_map(combined, dest_infos):
                            caption="Weighted avg. travel time (min)")
     c = combined.geometry.union_all().centroid
     m = folium.Map(location=[c.y, c.x], zoom_start=12, tiles="CartoDB positron",
-                   attr="© OpenStreetMap contributors © CARTO")
+                   attr="© OpenStreetMap contributors © CARTO",
+                   scrollWheelZoom=False)
     fg = folium.FeatureGroup(name="Avg. commute", show=True)
     for _, row in combined.iterrows():
         w     = row.get("commute_weighted")
@@ -1212,7 +1213,7 @@ def page_pulse():
     st.plotly_chart(
         st.session_state.pulse_figure,
         use_container_width=True,
-        config={"scrollZoom": True, "displayModeBar": False},
+        config={"scrollZoom": False, "displayModeBar": False},
     )
 
     # ── Daily timeline bar chart ──────────────────────────────────────────────

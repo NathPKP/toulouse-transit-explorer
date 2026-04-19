@@ -558,7 +558,8 @@ def build_map(gdf: gpd.GeoDataFrame,
     c = gdf.geometry.union_all().centroid
     m = folium.Map(location=[c.y, c.x], zoom_start=12,
                    tiles="CartoDB positron",
-                   attr="© OpenStreetMap contributors © CARTO")
+                   attr="© OpenStreetMap contributors © CARTO",
+                   scrollWheelZoom=False)
 
     fg = folium.FeatureGroup(name="Travel time", show=True)
     for _, row in gdf.iterrows():

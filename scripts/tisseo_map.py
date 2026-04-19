@@ -237,6 +237,7 @@ def build_map(gdf: gpd.GeoDataFrame) -> folium.Map:
         zoom_start=12,
         tiles="CartoDB positron",
         attr="© OpenStreetMap contributors © CARTO",
+        scrollWheelZoom=False,
     )
 
     fg_score, colormap = layer_score(gdf)
