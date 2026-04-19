@@ -200,6 +200,11 @@ _L: dict[str, dict[str, str]] = {
         "cmp_locate"       : "Localiser",
         "err_min2"         : "Saisissez au moins 2 adresses avant de lancer le calcul.",
         "t3_click_tip"     : "Surligner un quartier sur la carte",
+        # Day type
+        "day_type_label"   : "Jour type",
+        "day_weekday"      : "Semaine",
+        "day_saturday"     : "Samedi",
+        "day_sunday"       : "Dimanche",
     },
     "en": {
         "app_title"        : "Tisséo Network — Toulouse",
@@ -370,6 +375,11 @@ _L: dict[str, dict[str, str]] = {
         "cmp_locate"       : "Locate",
         "err_min2"         : "Enter at least 2 addresses before calculating.",
         "t3_click_tip"     : "Highlight a district on the map",
+        # Day type
+        "day_type_label"   : "Day type",
+        "day_weekday"      : "Weekday",
+        "day_saturday"     : "Saturday",
+        "day_sunday"       : "Sunday",
     },
 }
 
@@ -478,7 +488,8 @@ def get_hourly_data() -> pd.DataFrame:
     show_spinner=False,
     hash_funcs={gpd.GeoDataFrame: lambda g: tuple(g["iris_code"].tolist())},
 )
-def run_commute_data(lat: float, lon: float, label: str, heure: int, marche: int):
+def run_commute_data(lat: float, lon: float, label: str, heure: int, marche: int,
+                     day_type: str = "weekday"):
     indicators = get_desserte_data()
     sp         = get_stop_points()
     wp         = get_walk_pairs()
@@ -486,7 +497,7 @@ def run_commute_data(lat: float, lon: float, label: str, heure: int, marche: int
         dest_stops = find_dest_stops(sp, lat, lon)
     except ValueError as e:
         return None, str(e)
-    con    = _open_con()
+    con    = _open_con(day_type)
     wait   = compute_wait(con, heure)
     st_df  = build_stop_times(con, dest_stops, sp, heure, walk_pairs=wp)
     con.close()
@@ -563,7 +574,7 @@ def _init_from_query_params():
             st.session_state["md_data"]       = {}
             st.session_state["md_combined"]   = None
             st.session_state["md_dest_infos"] = []
-            st.session_state["md_map"]        = None
+            st.session_state["md_figure"]     = None
             st.session_state["md_restored"]   = True
         try:
             if "md_h" in params:
@@ -820,7 +831,12 @@ def page_commute():
                     unsafe_allow_html=True)
 
     step_header(2, t("t2_step2"))
-    col1, col2 = st.columns(2)
+    _day_opts = [t("day_weekday"), t("day_saturday"), t("day_sunday")]
+    _day_keys = ["weekday", "saturday", "sunday"]
+    col_day, col1, col2 = st.columns([2, 2, 2])
+    with col_day:
+        _day_lbl = st.radio(t("day_type_label"), _day_opts, horizontal=True, key="c1_day")
+        day_type = _day_keys[_day_opts.index(_day_lbl)]
     with col1: heure  = st.slider(t("t2_hour"),  5, 23, 8,    key="c1_h")
     with col2: marche = st.slider(t("t2_walk"), 200, 1500, 800, 100, key="c1_m")
 
@@ -845,7 +861,7 @@ def page_commute():
 
             if coords_ok:
                 with st.spinner(t("computing")):
-                    result, err = run_commute_data(lat, lon, label, heure, marche)
+                    result, err = run_commute_data(lat, lon, label, heure, marche, day_type)
                 if result is None:
                     st.error(err)
                     st.session_state.pop("c1_result", None)
@@ -856,7 +872,7 @@ def page_commute():
                     st.session_state["c1_result"]   = result
                     st.session_state["c1_map_html"] = _add_scroll_zoom(m.get_root().render())
                     st.session_state["c1_dest"]     = (lat, lon, label)
-                    st.session_state["c1_params"]   = (heure, marche)
+                    st.session_state["c1_params"]   = (heure, marche, day_type)
                     st.query_params.clear()
                     st.query_params.update({
                         "lat": f"{lat:.6f}", "lon": f"{lon:.6f}",
@@ -872,8 +888,8 @@ def page_commute():
             st.info(t("t2_info"))
         return
 
-    cached_params = st.session_state.get("c1_params", (heure, marche))
-    if (heure, marche) != cached_params:
+    cached_params = st.session_state.get("c1_params", (heure, marche, day_type))
+    if (heure, marche, day_type) != cached_params:
         st.markdown(f'<div class="stale-warn">&#9888; {t("t2_stale")}</div>',
                     unsafe_allow_html=True)
 
@@ -929,7 +945,7 @@ def _init_multi():
         "md_params"    : {},
         "md_combined"  : None,
         "md_dest_infos": [],
-        "md_map"       : None,
+        "md_figure"    : None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -938,7 +954,7 @@ def _init_multi():
 
 def _invalidate_combined():
     st.session_state.md_combined = None
-    st.session_state.md_map      = None
+    st.session_state.md_figure   = None
 
 
 def combine_commutes(results, indicators):
@@ -1007,6 +1023,112 @@ def _multi_popup(row, dest_infos):
       <div style="background:#eee;border-radius:3px;height:5px;margin-top:16px">
         <div style="background:{cat_col};height:5px;border-radius:3px;width:{sw}%"></div>
       </div></div>"""
+
+
+def build_multi_figure(combined, dest_infos, highlight_code=None):
+    """Plotly choropleth_mapbox for multi-destination — faster than Folium (native render)."""
+    # Simplified geometry (~60 % smaller GeoJSON)
+    gdf_s = combined[["iris_code", "iris_nom", "geometry"]].copy()
+    gdf_s["geometry"] = gdf_s.geometry.simplify(0.0002, preserve_topology=True)
+    geojson = json.loads(gdf_s[["iris_code", "geometry"]].to_json())
+
+    df = combined[["iris_code", "iris_nom", "commute_weighted",
+                    "commute_max", "all_connected", "score_desserte", "categorie"]].copy()
+
+    # Pre-format per-destination times for hover
+    for i, (label, *_) in enumerate(dest_infos):
+        df[f"_d{i}"] = combined[f"t_{label}"].map(
+            lambda x: f"{x:.0f} min" if not pd.isna(x) else "—")
+
+    df["_wavg"] = df["commute_weighted"].map(
+        lambda x: f"{x:.0f} min" if not pd.isna(x) else "—")
+    df["_wmax"] = df["commute_max"].map(
+        lambda x: f"{x:.0f} min" if not pd.isna(x) else "—")
+    df["_score"] = df["score_desserte"].map(
+        lambda x: f"{x:.0f}/100" if not pd.isna(x) else "—")
+
+    cd_cols = ["iris_nom", "_wavg", "_wmax", "_score"] + [f"_d{i}" for i in range(len(dest_infos))]
+
+    valid = df["commute_weighted"].dropna()
+    vmin  = max(0.0, float(valid.min()) - 2) if not valid.empty else 0
+    vmax  = float(min(COMMUTE_CAP, valid.quantile(0.95))) if not valid.empty else COMMUTE_CAP
+
+    fig = px.choropleth_mapbox(
+        df,
+        geojson=geojson,
+        locations="iris_code",
+        featureidkey="properties.iris_code",
+        color="commute_weighted",
+        custom_data=cd_cols,
+        color_continuous_scale=PALETTE,
+        range_color=[vmin, vmax],
+        mapbox_style="carto-positron",
+        zoom=10,
+        center={"lat": 43.6047, "lon": 1.4442},
+        opacity=0.82,
+        labels={"commute_weighted": "min"},
+    )
+
+    # Hover template
+    dest_rows = "".join(
+        f"<span style='color:{DEST_COLS[i % len(DEST_COLS)]}'>&#9679;</span> "
+        f"{label}: %{{customdata[{4+i}]}}<br>"
+        for i, (label, *_) in enumerate(dest_infos)
+    )
+    fig.update_traces(
+        hovertemplate=(
+            "<b>%{customdata[0]}</b><br>"
+            "Avg: <b>%{customdata[1]}</b><br>"
+            + dest_rows +
+            "Worst: %{customdata[2]}  Score: %{customdata[3]}"
+            "<extra></extra>"
+        )
+    )
+
+    # Destination markers
+    total_w = sum(w for *_, w in dest_infos)
+    for i, (label, lat, lon, w) in enumerate(dest_infos):
+        pct = int(w / total_w * 100)
+        fig.add_trace(go.Scattermapbox(
+            lat=[lat], lon=[lon],
+            mode="markers+text",
+            marker=dict(size=14, color=DEST_COLS[i % len(DEST_COLS)]),
+            text=[label],
+            textposition="top right",
+            hovertemplate=f"<b>{label}</b><br>Weight: {pct}%<extra></extra>",
+            showlegend=False,
+        ))
+
+    # Highlight district with a polygon outline
+    if highlight_code is not None:
+        hl = combined[combined["iris_code"] == highlight_code]
+        if not hl.empty:
+            geom  = hl.iloc[0].geometry
+            polys = list(geom.geoms) if geom.geom_type == "MultiPolygon" else [geom]
+            lats, lons = [], []
+            for poly in polys:
+                xs, ys = poly.exterior.xy
+                lats.extend(list(ys) + [ys[0], None])
+                lons.extend(list(xs) + [xs[0], None])
+            # Zoom to highlighted district
+            c = geom.centroid
+            fig.update_layout(mapbox_zoom=13, mapbox_center={"lat": c.y, "lon": c.x})
+            fig.add_trace(go.Scattermapbox(
+                lat=lats, lon=lons,
+                mode="lines",
+                line=dict(color="#1d4ed8", width=3),
+                hoverinfo="skip",
+                showlegend=False,
+            ))
+
+    fig.update_layout(
+        margin={"r": 0, "t": 0, "l": 0, "b": 0},
+        height=700,
+        coloraxis_colorbar=dict(
+            title="min", thickness=14, len=0.5, y=0.5,
+        ),
+    )
+    return fig
 
 
 def build_multi_map(combined, dest_infos, highlight_code=None):
@@ -1172,16 +1294,23 @@ def page_multi():
             st.rerun()
 
     step_header(2, t("t3_step2"))
-    col1, col2 = st.columns(2)
+    _day_opts3 = [t("day_weekday"), t("day_saturday"), t("day_sunday")]
+    _day_keys3 = ["weekday", "saturday", "sunday"]
+    col_day3, col1, col2 = st.columns([2, 2, 2])
+    with col_day3:
+        _day_lbl3 = st.radio(t("day_type_label"), _day_opts3, horizontal=True, key="md_day")
+        md_day_type = _day_keys3[_day_opts3.index(_day_lbl3)]
     with col1: heure  = st.slider(t("t2_hour"), 5, 23, 8,    key="md_h")
     with col2: marche = st.slider(t("t2_walk"), 200, 1500, 800, 100, key="md_m")
 
     if (st.session_state.get("md_last_h") != heure or
-            st.session_state.get("md_last_m") != marche):
+            st.session_state.get("md_last_m") != marche or
+            st.session_state.get("md_last_day") != md_day_type):
         st.session_state.md_data.clear()
         _invalidate_combined()
-    st.session_state["md_last_h"] = heure
-    st.session_state["md_last_m"] = marche
+    st.session_state["md_last_h"]   = heure
+    st.session_state["md_last_m"]   = marche
+    st.session_state["md_last_day"] = md_day_type
 
     _pending = st.session_state.pop("md_pending_compute", False)
     run_btn  = st.button(t("t3_run"), type="primary", use_container_width=True, key="md_run")
@@ -1215,12 +1344,12 @@ def page_multi():
         for step, d in enumerate(dests_ok):
             geo = st.session_state.md_geo[d["id"]]
             lat, lon, label = geo
-            params = (lat, lon, heure, marche)
+            params = (lat, lon, heure, marche, md_day_type)
             prog.progress(step / len(dests_ok), f"{d['name']} ({label})…")
             if (st.session_state.md_params.get(d["id"]) == params
                     and d["id"] in st.session_state.md_data):
                 continue
-            result, err = run_commute_data(lat, lon, label, heure, marche)
+            result, err = run_commute_data(lat, lon, label, heure, marche, md_day_type)
             if result is None:
                 errors.append(f"{d['name']}: {err}")
                 continue
@@ -1239,7 +1368,7 @@ def page_multi():
         if len(ready) >= 2:
             st.session_state.md_combined   = combine_commutes(ready, indicators)
             st.session_state.md_dest_infos = [(lb, la, lo, w) for _, lb, la, lo, w in ready]
-            st.session_state.md_map        = None
+            st.session_state.md_figure     = None
             _qp = {"md_h": str(heure), "md_m": str(marche)}
             for _i, _d in enumerate(dests_ok):
                 _g = st.session_state.md_geo[_d["id"]]
@@ -1276,7 +1405,7 @@ def page_multi():
                     st.session_state.md_combined   = combine_commutes(ready, indicators)
                     st.session_state.md_dest_infos = [(lb, la, lo, w)
                                                       for _, lb, la, lo, w in ready]
-                    st.session_state.md_map        = None
+                    st.session_state.md_figure     = None
                     _qp2 = {
                         "md_h": str(st.session_state.get("md_h", 8)),
                         "md_m": str(st.session_state.get("md_m", 800)),
@@ -1328,17 +1457,21 @@ def page_multi():
         _new_hl = top.loc[top["iris_nom"] == _hl_nom, "iris_code"].iloc[0]
         if _new_hl != st.session_state.get("md_highlight"):
             st.session_state.md_highlight = _new_hl
-            st.session_state.md_map = None
+            st.session_state.md_figure = None
     elif _hl_nom == "—" and st.session_state.get("md_highlight"):
         st.session_state.md_highlight = None
-        st.session_state.md_map = None
+        st.session_state.md_figure = None
 
-    if st.session_state.md_map is None:
+    if st.session_state.md_figure is None:
         with st.spinner("Construction de la carte…"):
-            m = build_multi_map(combined, dest_infos,
-                                highlight_code=st.session_state.get("md_highlight"))
-            st.session_state.md_map = _add_scroll_zoom(m.get_root().render())
-    components.html(st.session_state.md_map, height=740)
+            st.session_state.md_figure = build_multi_figure(
+                combined, dest_infos,
+                highlight_code=st.session_state.get("md_highlight"))
+    st.plotly_chart(
+        st.session_state.md_figure,
+        use_container_width=True,
+        config={"scrollZoom": False, "displayModeBar": False},
+    )
     top[t("t3_avg")]      = top["commute_weighted"].map(lambda x: f"{x:.0f} min")
     top[t("t3_worst")]    = top["commute_max"].map(lambda x: f"{x:.0f} min")
     _is_fr = st.session_state.get("lang", "fr") == "fr"
