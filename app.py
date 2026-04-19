@@ -778,8 +778,7 @@ def page_desserte():
                     folium.GeoJson(
                         hl[["geometry"]].__geo_interface__,
                         style_function=lambda _: {
-                            "fillColor": "transparent", "color": "#1d4ed8",
-                            "weight": 3, "fillOpacity": 0,
+                            "fill": False, "color": "#1d4ed8", "weight": 3,
                         },
                     ).add_to(m)
                 folium.CircleMarker(
@@ -798,8 +797,7 @@ def page_desserte():
                     folium.GeoJson(
                         hl_md[["geometry"]].__geo_interface__,
                         style_function=lambda _: {
-                            "fillColor": "transparent", "color": "#f59e0b",
-                            "weight": 3, "fillOpacity": 0,
+                            "fill": False, "color": "#f59e0b", "weight": 3,
                         },
                         tooltip=folium.Tooltip(nom_md, sticky=True),
                     ).add_to(m)
