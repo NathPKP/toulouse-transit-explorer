@@ -678,10 +678,120 @@ def render_sidebar():
 
         st.divider()
         if st.button(t("sb_rebuild"), use_container_width=True):
-            st.session_state.pop("desserte_html", None)
+            st.session_state.pop("desserte_figure", None)
             st.rerun()
 
         st.caption(t("sb_version"))
+
+
+# ── Polygon outline helper ────────────────────────────────────────────────────
+
+def _scattermapbox_outline(fig, geom, color: str, tooltip: str = "") -> None:
+    """Add a polygon outline as Scattermapbox lines on a Plotly figure (in-place)."""
+    polys = list(geom.geoms) if geom.geom_type == "MultiPolygon" else [geom]
+    lats, lons = [], []
+    for poly in polys:
+        xs, ys = poly.exterior.xy
+        lats.extend(list(ys) + [ys[0], None])
+        lons.extend(list(xs) + [xs[0], None])
+    fig.add_trace(go.Scattermapbox(
+        lat=lats, lon=lons,
+        mode="lines",
+        line=dict(color=color, width=3),
+        hovertemplate=f"<b>{tooltip}</b><extra></extra>" if tooltip else None,
+        hoverinfo="skip" if not tooltip else None,
+        showlegend=False,
+    ))
+
+
+def build_desserte_figure(gdf: gpd.GeoDataFrame, found=None, md_hl_code=None):
+    """Plotly choropleth for the network coverage tab."""
+    gdf_s = gdf[["iris_code", "iris_nom", "geometry"]].copy()
+    gdf_s["geometry"] = gdf_s.geometry.simplify(0.0002, preserve_topology=True)
+    geojson = json.loads(gdf_s[["iris_code", "geometry"]].to_json())
+
+    safe = lambda col: gdf[col] if col in gdf.columns else pd.Series(float("nan"), index=gdf.index)
+    df = gdf[["iris_code", "iris_nom", "score_desserte", "categorie"]].copy()
+    df["categorie"] = df["categorie"].fillna("non desservi").astype(str)
+    df["_score"]  = df["score_desserte"].map(lambda x: f"{x:.0f}/100" if not pd.isna(x) else "—")
+    df["_cat"]    = df["categorie"]
+    df["_amp"]    = safe("amplitude_h").map(lambda x: f"{x:.0f} h" if not pd.isna(x) else "—")
+    df["_freq"]   = safe("freq_pointe_min").map(lambda x: f"{x:.1f} min" if not pd.isna(x) else "—")
+    df["_lines"]  = safe("max_lignes").map(lambda x: f"{x:.0f}" if not pd.isna(x) else "—")
+    df["_trips"]  = safe("total_passages").map(lambda x: f"{x:.0f}" if not pd.isna(x) else "—")
+
+    fig = px.choropleth_mapbox(
+        df,
+        geojson=geojson,
+        locations="iris_code",
+        featureidkey="properties.iris_code",
+        color="score_desserte",
+        custom_data=["iris_nom", "_score", "_cat", "_amp", "_freq", "_lines", "_trips"],
+        color_continuous_scale=["#d73027", "#fc8d59", "#fee08b", "#91cf60", "#1a9850"],
+        range_color=[0, 100],
+        mapbox_style="carto-positron",
+        zoom=10,
+        center={"lat": 43.6047, "lon": 1.4442},
+        opacity=0.82,
+        labels={"score_desserte": "Score"},
+    )
+    fig.update_traces(
+        marker_line_color="#666",
+        marker_line_width=0.5,
+        hovertemplate=(
+            "<b>%{customdata[0]}</b><br>"
+            "Score: <b>%{customdata[1]}</b> — %{customdata[2]}<br>"
+            "Amplitude: %{customdata[3]}<br>"
+            "Fréq. pointe: %{customdata[4]}<br>"
+            "Lignes max: %{customdata[5]}<br>"
+            "Passages/jour: %{customdata[6]}"
+            "<extra></extra>"
+        )
+    )
+
+    # Address search marker + outline
+    if found and found.get("iris_nom"):
+        fig.add_trace(go.Scattermapbox(
+            lat=[found["lat"]], lon=[found["lon"]],
+            mode="markers",
+            marker=dict(size=12, color="#1d4ed8"),
+            hovertemplate=f"<b>{found['label']}</b><br>{found['iris_nom']}<extra></extra>",
+            showlegend=False,
+        ))
+        hl = gdf[gdf["iris_code"] == found["iris_code"]]
+        if not hl.empty:
+            _scattermapbox_outline(fig, hl.iloc[0].geometry, "#1d4ed8")
+
+    # Multi-dest district outline
+    if md_hl_code:
+        hl_md = gdf[gdf["iris_code"] == md_hl_code]
+        if not hl_md.empty:
+            nom_md = hl_md.iloc[0].get("iris_nom", "")
+            geom   = hl_md.iloc[0].geometry
+            _scattermapbox_outline(fig, geom, "#f59e0b", tooltip=nom_md)
+            c = geom.centroid
+            fig.update_layout(mapbox_zoom=13, mapbox_center={"lat": c.y, "lon": c.x})
+
+    b = gdf.total_bounds  # [minx, miny, maxx, maxy]
+    center_lat = (b[1] + b[3]) / 2
+    center_lon = (b[0] + b[2]) / 2
+    fig.update_layout(
+        margin={"r": 0, "t": 0, "l": 0, "b": 0},
+        height=740,
+        mapbox_center={"lat": center_lat, "lon": center_lon},
+        mapbox_zoom=10,
+        coloraxis_colorbar=dict(
+            title=dict(text="Score", font=dict(size=12)),
+            thickness=12,
+            len=0.45,
+            y=0.75,
+            bgcolor="rgba(255,255,255,0.85)",
+            bordercolor="#e2e8f0",
+            borderwidth=1,
+            tickfont=dict(size=11),
+        ),
+    )
+    return fig
 
 
 # ── Tab 1: Network coverage ───────────────────────────────────────────────────
@@ -739,7 +849,7 @@ def page_desserte():
                     "lat": lat, "lon": lon, "label": label,
                     "addr": search_addr, "iris_nom": None,
                 }
-            st.session_state.pop("desserte_html", None)
+            st.session_state.pop("desserte_figure", None)
         except ValueError as e:
             st.error(str(e))
 
@@ -764,46 +874,64 @@ def page_desserte():
         else:
             st.warning(t("t1_search_notfound"))
 
-    # Invalidate desserte map if the multi-dest highlight changed
-    _md_hl = st.session_state.get("md_highlight")
-    if st.session_state.get("_desserte_md_hl") != _md_hl:
-        st.session_state.pop("desserte_html", None)
-
-    if "desserte_html" not in st.session_state:
+    _md_hl      = st.session_state.get("md_highlight")
+    _found_code = found.get("iris_code") if found and found.get("iris_nom") else None
+    if (
+        "desserte_figure" not in st.session_state
+        or st.session_state.get("_dfig_found_code") != _found_code
+        or st.session_state.get("_dfig_md_hl") != _md_hl
+    ):
         with st.spinner("Construction de la carte…"):
-            m = build_desserte_map(gdf)
-            if found and found.get("iris_nom"):
-                hl = gdf[gdf["iris_code"] == found["iris_code"]]
-                if not hl.empty:
-                    folium.GeoJson(
-                        hl[["geometry"]].__geo_interface__,
-                        style_function=lambda _: {
-                            "fill": False, "color": "#1d4ed8", "weight": 3,
-                        },
-                    ).add_to(m)
-                folium.CircleMarker(
-                    [found["lat"], found["lon"]],
-                    radius=8, color="#1d4ed8",
-                    fill=True, fill_color="#3b82f6", fill_opacity=0.85,
-                    tooltip=found["label"],
-                    popup=folium.Popup(
-                        f"<b>{found['label']}</b><br>{found['iris_nom']}", max_width=200),
-                ).add_to(m)
-            # Highlight district selected in multi-destination tab
-            if _md_hl:
-                hl_md = gdf[gdf["iris_code"] == _md_hl]
-                if not hl_md.empty:
-                    nom_md = hl_md.iloc[0].get("iris_nom", "")
-                    folium.GeoJson(
-                        hl_md[["geometry"]].__geo_interface__,
-                        style_function=lambda _: {
-                            "fill": False, "color": "#f59e0b", "weight": 3,
-                        },
-                        tooltip=folium.Tooltip(nom_md, sticky=True),
-                    ).add_to(m)
-            st.session_state.desserte_html    = _add_scroll_zoom(m.get_root().render())
-            st.session_state["_desserte_md_hl"] = _md_hl
-    components.html(st.session_state.desserte_html, height=740)
+            st.session_state["desserte_figure"]  = build_desserte_figure(gdf, found, _md_hl)
+            st.session_state["_dfig_found_code"] = _found_code
+            st.session_state["_dfig_md_hl"]      = _md_hl
+
+    @st.fragment
+    def _desserte_chart(gdf_inner):
+        info_box = st.container()
+        ev = st.plotly_chart(
+            st.session_state["desserte_figure"],
+            use_container_width=True,
+            config={"scrollZoom": True, "displayModeBar": False},
+            on_select="rerun",
+            key="desserte_chart",
+        )
+        if ev and ev.selection and ev.selection.points:
+            st.session_state["desserte_sel_code"] = ev.selection.points[0].get("location")
+
+        sel_code = st.session_state.get("desserte_sel_code")
+        if sel_code:
+            row = gdf_inner[gdf_inner["iris_code"] == sel_code]
+            if not row.empty:
+                r = row.iloc[0]
+                _safe = lambda col, fmt="{:.0f}", suf="": (
+                    fmt.format(r[col]) + suf if col in r.index and not pd.isna(r[col]) else "—")
+                sc  = r.get("score_desserte"); cat = str(r.get("categorie", ""))
+                cc  = {"bien desservi": "#1a9850", "moyen": "#f59e0b",
+                       "sous-desservi": "#d73027"}.get(cat, "#94a3b8")
+                with info_box:
+                    st.markdown(
+                        f'<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;'
+                        f'padding:14px 18px;margin-bottom:8px">'
+                        f'<b style="font-size:15px">{r.get("iris_nom","")}</b>'
+                        f'<span style="color:#94a3b8;font-size:11px;margin-left:6px">{sel_code}</span>'
+                        f'<span style="background:{cc};color:#fff;font-size:11px;padding:2px 8px;'
+                        f'border-radius:8px;margin-left:8px">{cat}</span>'
+                        f'<span style="float:right;font-weight:700;color:{cc};font-size:16px">'
+                        f'{"—" if pd.isna(sc) else f"{sc:.0f}"}<span style="font-size:11px;'
+                        f'color:#94a3b8;font-weight:400">/100</span></span>'
+                        f'<div style="background:#eee;border-radius:4px;height:6px;margin:8px 0">'
+                        f'<div style="background:{cc};height:6px;border-radius:4px;'
+                        f'width:{int(sc) if not pd.isna(sc) else 0}%"></div></div>'
+                        f'<div style="display:flex;gap:24px;font-size:12px;color:#555;margin-top:6px">'
+                        f'<span>Amplitude : <b>{_safe("amplitude_h", "{:.0f}", " h")}</b></span>'
+                        f'<span>Fréq. pointe : <b>{_safe("freq_pointe_min", "{:.1f}", " min")}</b></span>'
+                        f'<span>Lignes max : <b>{_safe("max_lignes")}</b></span>'
+                        f'<span>Passages/j : <b>{_safe("total_passages")}</b></span>'
+                        f'</div></div>',
+                        unsafe_allow_html=True)
+
+    _desserte_chart(gdf)
 
 
 # ── Tab 2: Commute planner ────────────────────────────────────────────────────
